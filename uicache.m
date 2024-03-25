@@ -175,8 +175,10 @@ SecStaticCodeRef getStaticCodeRef(NSString *binaryPath) {
 	return codeRef;
 }
 
-NSDictionary *dumpEntitlements(SecStaticCodeRef codeRef) {
-	if (codeRef == NULL) {
+NSDictionary* dumpEntitlements(SecStaticCodeRef codeRef)
+{
+	if(codeRef == NULL)
+	{
 		return nil;
 	}
 	
@@ -185,29 +187,36 @@ NSDictionary *dumpEntitlements(SecStaticCodeRef codeRef) {
 	
 	result = SecCodeCopySigningInformation(codeRef, kSecCSRequirementInformation, &signingInfo);
 	
-	if (result != errSecSuccess) {
+	if(result != errSecSuccess)
+	{
 		return nil;
 	}
 	
 	NSDictionary *entitlementsNSDict = nil;
-	
 	CFDictionaryRef entitlements = CFDictionaryGetValue(signingInfo, kSecCodeInfoEntitlementsDict);
-	if (entitlements) {
-		if (CFGetTypeID(entitlements) == CFDictionaryGetTypeID()) {
-			entitlementsNSDict = (__bridge NSDictionary *)(entitlements);
-		}
+
+    if (entitlements) {
+        if (CFGetTypeID(entitlements) == CFDictionaryGetTypeID()) {
+            entitlementsNSDict = (__bridge NSDictionary *)(entitlements);
+        }
 	}
+	
 	CFRelease(signingInfo);
 	return entitlementsNSDict;
 }
 
-NSDictionary *dumpEntitlementsFromBinaryAtPath(NSString *binaryPath) {
-	if (binaryPath == nil) {
+NSDictionary* dumpEntitlementsFromBinaryAtPath(NSString *binaryPath)
+{
+	// This function is intended for one-shot checks. Main-event functions should retain/release their own SecStaticCodeRefs
+	
+	if (binaryPath == nil)
+	{
 		return nil;
 	}
 	
 	SecStaticCodeRef codeRef = getStaticCodeRef(binaryPath);
-	if (codeRef == NULL) {
+	if (codeRef == NULL)
+	{
 		return nil;
 	}
 	
@@ -248,24 +257,6 @@ NSDictionary *constructGroupsContainersForEntitlements(NSDictionary *entitlement
 	return nil;
 }
 
-BOOL constructContainerizationForEntitlements(NSDictionary *entitlements) {
-	NSNumber *noContainer = entitlements[@"com.apple.private.security.no-container"];
-	if (noContainer && [noContainer isKindOfClass:[NSNumber class]]) {
-		if (noContainer.boolValue) {
-			return NO;
-		}
-	}
-
-	NSNumber *containerRequired = entitlements[@"com.apple.private.security.container-required"];
-	if (containerRequired && [containerRequired isKindOfClass:[NSNumber class]]) {
-		if (!containerRequired.boolValue) {
-			return NO;
-		}
-	}
-
-	return YES;
-}
-
 NSString *constructTeamIdentifierForEntitlements(NSDictionary *entitlements) {
 	NSString *teamIdentifier = entitlements[@"com.apple.developer.team-identifier"];
 	if (teamIdentifier && [teamIdentifier isKindOfClass:[NSString class]]) {
@@ -284,8 +275,31 @@ NSDictionary *constructEnvironmentVariablesForContainerPath(NSString *containerP
 	};
 }
 
-void registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
-	if (!path) return;
+
+
+BOOL constructContainerizationForEntitlements(NSDictionary *entitlements, NSString **customContainerOut) {
+	NSNumber *noContainer = entitlements[@"com.apple.private.security.no-container"];
+	if (noContainer && [noContainer isKindOfClass:[NSNumber class]]) {
+		if (noContainer.boolValue) {
+			return NO;
+		}
+	}
+
+	NSObject *containerRequired = entitlements[@"com.apple.private.security.container-required"];
+	if (containerRequired && [containerRequired isKindOfClass:[NSNumber class]]) {
+		if (!((NSNumber *)containerRequired).boolValue) {
+			return NO;
+		}
+	}
+	else if (containerRequired && [containerRequired isKindOfClass:[NSString class]]) {
+		*customContainerOut = (NSString *)containerRequired;
+	}
+
+	return YES;
+}
+
+bool registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
+	if (!path) return false;
 
 	LSApplicationWorkspace *workspace = [LSApplicationWorkspace defaultWorkspace];
 	if (unregister && ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
@@ -301,8 +315,14 @@ void registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
 	NSString *appBundleID = [appInfoPlist objectForKey:@"CFBundleIdentifier"];
 
 	if (appBundleID && !unregister) {
-		MCMContainer *appContainer = [NSClassFromString(@"MCMAppDataContainer") containerWithIdentifier:appBundleID createIfNecessary:YES existed:nil error:nil];
-		NSString *containerPath = [appContainer url].path;
+		NSString *appExecutablePath = [path stringByAppendingPathComponent:appInfoPlist[@"CFBundleExecutable"]];
+		NSDictionary *entitlements = dumpEntitlementsFromBinaryAtPath(appExecutablePath);
+
+		NSString *appDataContainerID = appBundleID;
+		BOOL appContainerized = constructContainerizationForEntitlements(entitlements, &appDataContainerID);
+
+		MCMContainer *appDataContainer = [NSClassFromString(@"MCMAppDataContainer") containerWithIdentifier:appDataContainerID createIfNecessary:YES existed:nil error:nil];
+		NSString *containerPath = [appDataContainer url].path;
 
 		BOOL isRemovableSystemApp = [[NSFileManager defaultManager] fileExistsAtPath:[@"/System/Library/AppSignatures" stringByAppendingPathComponent:appBundleID]];
 		BOOL registerAsUser = [path hasPrefix:@"/var/containers"] && !isRemovableSystemApp && !forceSystem;
@@ -311,12 +331,9 @@ void registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
 
 		// Add entitlements
 
-		NSString *appExecutablePath = [path stringByAppendingPathComponent:appInfoPlist[@"CFBundleExecutable"]];
-		NSDictionary *entitlements = dumpEntitlementsFromBinaryAtPath(appExecutablePath);
 		if (entitlements) {
 			dictToRegister[@"Entitlements"] = entitlements;
 		}
-		
 
 		// Misc
 	
@@ -324,7 +341,6 @@ void registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
 		dictToRegister[@"CFBundleIdentifier"] = appBundleID;
 		dictToRegister[@"CodeInfoIdentifier"] = appBundleID;
 		dictToRegister[@"CompatibilityState"] = @0;
-		BOOL appContainerized = constructContainerizationForEntitlements(entitlements);
 		dictToRegister[@"IsContainerized"] = @(appContainerized);
 		if (containerPath) {
 			dictToRegister[@"Container"] = containerPath;
@@ -376,15 +392,17 @@ void registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
 			NSString *pluginBundleID = [pluginInfoPlist objectForKey:@"CFBundleIdentifier"];
 
 			if (!pluginBundleID) continue;
-			MCMContainer *pluginContainer = [NSClassFromString(@"MCMPluginKitPluginDataContainer") containerWithIdentifier:pluginBundleID createIfNecessary:YES existed:nil error:nil];
+			NSString *pluginExecutablePath = [pluginPath stringByAppendingPathComponent:pluginInfoPlist[@"CFBundleExecutable"]];
+			NSDictionary *pluginEntitlements = dumpEntitlementsFromBinaryAtPath(pluginExecutablePath);
+			NSString *pluginDataContainerID = pluginBundleID;
+			BOOL pluginContainerized = constructContainerizationForEntitlements(pluginEntitlements, &pluginDataContainerID);
+
+			MCMContainer *pluginContainer = [NSClassFromString(@"MCMPluginKitPluginDataContainer") containerWithIdentifier:pluginDataContainerID createIfNecessary:YES existed:nil error:nil];
 			NSString *pluginContainerPath = [pluginContainer url].path;
 
 			NSMutableDictionary *pluginDict = [NSMutableDictionary dictionary];
 
 			// Add entitlements
-
-			NSString *pluginExecutablePath = [pluginPath stringByAppendingPathComponent:pluginInfoPlist[@"CFBundleExecutable"]];
-			NSDictionary *pluginEntitlements = dumpEntitlementsFromBinaryAtPath(pluginExecutablePath);
 			if (pluginEntitlements) {
 				pluginDict[@"Entitlements"] = pluginEntitlements;
 			}
@@ -395,7 +413,7 @@ void registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
 			pluginDict[@"CFBundleIdentifier"] = pluginBundleID;
 			pluginDict[@"CodeInfoIdentifier"] = pluginBundleID;
 			pluginDict[@"CompatibilityState"] = @0;
-			BOOL pluginContainerized = constructContainerizationForEntitlements(pluginEntitlements);
+			
 			pluginDict[@"IsContainerized"] = @(pluginContainerized);
 			if (pluginContainerPath) {
 				pluginDict[@"Container"] = pluginContainerPath;
@@ -431,19 +449,18 @@ void registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
 		}
 		[dictToRegister setObject:bundlePlugins forKey:@"_LSBundlePlugins"];
 
-		if (verbose) {
-			printf("Registering dictionary: %s\n", dictToRegister.description.UTF8String);
-		}
-
 		if (![workspace registerApplicationDictionary:dictToRegister]) {
 			fprintf(stderr, _("Error: Unable to register %s\n"), path.fileSystemRepresentation);
+			return false;
 		}
 	} else {
 		NSURL *url = [NSURL fileURLWithPath:path];
 		if (![workspace unregisterApplication:url]) {
-			fprintf(stderr, _("Error: Unable to unregister %s\n"), path.fileSystemRepresentation);
+			fprintf(stderr, _("Error: Unable to register %s\n"), path.fileSystemRepresentation);
+			return false;
 		}
 	}
+	return true;
 }
 
 void listBundleID(void) {
