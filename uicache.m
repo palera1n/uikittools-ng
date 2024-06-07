@@ -338,6 +338,7 @@ bool registerPath(NSString *path, BOOL unregister, BOOL forceSystem) {
 		// Misc
 
 		dictToRegister[@"ApplicationType"] = registerAsUser ? @"User" : @"System";
+		dictToRegister[@"BundleNameIsLocalized"] = @1;
 		dictToRegister[@"CFBundleIdentifier"] = appBundleID;
 		dictToRegister[@"CodeInfoIdentifier"] = appBundleID;
 		dictToRegister[@"CompatibilityState"] = @0;
@@ -531,7 +532,7 @@ void registerAll(void) {
 		NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfURL:infoPlistURL error:nil];
 		if (infoPlist) {
 			if (infoPlist[@"CFBundleExecutable"]) {
-				[installedAppURLs addObject:appURL];
+				[installedAppURLs addObject:appURL.URLByStandardizingPath];
 			}
 		}
 	};
@@ -550,7 +551,7 @@ void registerAll(void) {
 	for (LSApplicationProxy *app in [workspace allApplications]) {
 		NSString *appPath = [app bundleURL].path;
 		if ([appPath hasPrefix:@"/Applications"] || [appPath hasPrefix:APP_PATH] || [appPath hasPrefix:secondaryApps]) {
-			[registeredAppURLs addObject:[app bundleURL]];
+			[registeredAppURLs addObject:[app bundleURL].URLByStandardizingPath];
 		}
 	}
 
